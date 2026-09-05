@@ -129,12 +129,18 @@ void timer_thread(RDRAM_ARG1) {
             process_timer_action(cur_action);
         }
         else {
-            // Waiting for the timer completed, so send the timer's message to its message queue
-            ultramodern::enqueue_external_message_src(cur_timer->mq, cur_timer->msg, false, ultramodern::EventMessageSource::Timer);
-            // If the timer has a specified interval then reload it with that value
-            if (cur_timer->interval != 0) {
-                cur_timer->timestamp = cur_timer->interval + time_now();
+            // Completion can wake a caller that immediately reuses a stack
+            // timer. Finish every read/write of that timer before publishing.
+            const PTR(OSMesgQueue) mq = cur_timer->mq;
+            const OSMesg msg = cur_timer->msg;
+            const OSTime interval = cur_timer->interval;
+            if (interval != 0) {
+                cur_timer->timestamp = interval + time_now();
                 active_timers.insert(cur_timer_);
+            }
+            // libultra permits timers without a notification queue.
+            if (mq != NULLPTR) {
+                ultramodern::enqueue_external_message_src(mq, msg, false, ultramodern::EventMessageSource::Timer);
             }
         }
     }
