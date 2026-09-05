@@ -183,6 +183,7 @@ void recomp::overlays::read_patch_data(uint8_t* rdram, gpr patch_data_address) {
     for (size_t i = 0; i < patch_data.size(); i++) {
         MEM_B(i, patch_data_address) = patch_data[i];
     }
+    RECOMP_NOTIFY_WRITE(patch_data_address,patch_data.size());
 }
 
 extern "C" void load_overlays(uint32_t rom, int32_t ram_addr, uint32_t size) {

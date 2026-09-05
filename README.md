@@ -37,3 +37,25 @@ These libraries can be built in a standalone environment (ie, developing new fea
 cmake -B build -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ```
+
+## Optional framebuffer write tracking
+
+The Vita integration enables `RECOMP_TRACK_MEMORY_WRITES` for the runtime and
+generated C code. Rebuild the pinned N64Recomp tool and regenerate that code first;
+its integer/FPU store helpers record the exact bytes written, including SWL/SWR
+and SDL/SDR partial stores. A generated-header marker lets integrations reject old
+sources that would otherwise omit ordinary store notifications.
+
+`initialize_memory_writes` runs before guest workers start. The graphics thread
+uses `watch_memory_writes` to register resident framebuffer ranges and
+`collect_memory_writes` to consume N64-ordered byte masks/payloads at graphics
+boundaries. Page watches are reference counted; guest writers take a cheap page
+check before recording. At 32 MiB RDRAM, the byte bitmap uses 4 MiB plus page tables.
+This optional path currently uses GCC/Clang atomic builtins.
+
+ROM DMA/PIO, save-data reads, patch-data reads and RSP DMA writes also emit range
+notifications. Other native code that writes guest framebuffer memory must call
+`RECOMP_NOTIFY_WRITE(address, size)` after the write (with `rdram` in scope).
+This tracks stores in static C recompilations; it does not instrument LiveRecomp
+JIT code or synchronize overlapping GPU render targets by itself. Game/task
+synchronization must still prevent concurrent modification of live task inputs.

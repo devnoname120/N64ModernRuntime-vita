@@ -2,6 +2,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#ifdef RECOMP_TRACK_MEMORY_WRITES
+#include "librecomp/memory_writes.hpp"
+#endif
 #include <cmath>
 #include <unordered_map>
 #include <unordered_set>
@@ -1003,6 +1006,9 @@ void recomp::start(const recomp::Configuration& cfg) {
     }
 
     recomp::register_heap_exports();
+#ifdef RECOMP_TRACK_MEMORY_WRITES
+    initialize_memory_writes(rdram,mem_size);
+#endif
 #if RECOMP_ENABLE_MODS
     recomp::mods::register_config_exports();
     recomp::mods::register_hook_exports();

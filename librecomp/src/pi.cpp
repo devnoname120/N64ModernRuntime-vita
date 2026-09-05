@@ -72,6 +72,7 @@ void recomp::do_rom_read(uint8_t* rdram, gpr ram_address, uint32_t physical_addr
         MEM_B(i, ram_address) = *rom_addr;
         rom_addr++;
     }
+    RECOMP_NOTIFY_WRITE(ram_address,num_bytes);
 }
 
 void recomp::do_rom_pio(uint8_t* rdram, gpr ram_address, uint32_t physical_addr) {
@@ -82,6 +83,7 @@ void recomp::do_rom_pio(uint8_t* rdram, gpr ram_address, uint32_t physical_addr)
     MEM_B(1, ram_address) = *rom_addr++;
     MEM_B(2, ram_address) = *rom_addr++;
     MEM_B(3, ram_address) = *rom_addr++;
+    RECOMP_NOTIFY_WRITE(ram_address,4);
 }
 
 struct {
@@ -193,6 +195,7 @@ void save_read(RDRAM_ARG PTR(void) rdram_address, uint32_t offset, uint32_t coun
     for (gpr i = 0; i < count; i++) {
         MEM_B(i, rdram_address) = save_context.save_buffer[offset + i];
     }
+    RECOMP_NOTIFY_WRITE(rdram_address,count);
 }
 
 void save_clear(uint32_t start, uint32_t size, char value) {

@@ -110,6 +110,7 @@ static inline void dma_dmem_to_rdram(uint8_t* rdram, uint32_t dmem_addr, uint32_
     for (uint32_t i = 0; i < wr_len; i++) {
         MEM_B(0, (int64_t)(int32_t)(dram_addr + i + 0x80000000)) = RSP_MEM_B(i, dmem_addr);
     }
+    RECOMP_NOTIFY_WRITE(dram_addr,wr_len);
 }
 
 namespace recomp {

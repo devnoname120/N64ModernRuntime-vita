@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(RECOMP_ENABLE_MODS "Enable dynamic mod loading and live recompilation" ON)
+option(RECOMP_TRACK_MEMORY_WRITES "Record writes to watched guest framebuffer pages" OFF)
 
 # Define the library
 add_library(librecomp STATIC
@@ -35,6 +36,10 @@ add_library(librecomp STATIC
 )
 
 target_compile_definitions(librecomp PRIVATE RECOMP_ENABLE_MODS=$<BOOL:${RECOMP_ENABLE_MODS}>)
+if(RECOMP_TRACK_MEMORY_WRITES)
+    target_sources(librecomp PRIVATE src/memory_writes.cpp)
+    target_compile_definitions(librecomp PUBLIC RECOMP_TRACK_MEMORY_WRITES)
+endif()
 if(RECOMP_ENABLE_MODS)
     target_sources(librecomp PRIVATE src/config.cpp src/mods.cpp src/mod_events.cpp
         src/mod_hooks.cpp src/mod_manifest.cpp src/mod_config_api.cpp)
