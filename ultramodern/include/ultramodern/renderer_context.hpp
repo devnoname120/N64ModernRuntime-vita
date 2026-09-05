@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <vector>
 
 #if defined(_WIN32)
 #   define WIN32_LEAN_AND_MEAN
@@ -83,9 +84,16 @@ namespace ultramodern {
                 virtual bool update_config(const GraphicsConfig& old_config, const GraphicsConfig& new_config) = 0;
 
                 virtual void enable_instant_present() = 0;
+                // CPU display-list backends still read guest vertices, matrices
+                // and command memory during send_dl. They must defer the SP
+                // completion interrupt until those reads have finished.
+                virtual bool defer_rsp_completion() const { return false; }
                 virtual void send_dl(const OSTask* task) = 0;
                 virtual void send_dummy_workload(uint32_t fb_address) = 0;
                 virtual void update_screen() = 0;
+                // Invoked on the graphics thread. Return N64-ordered color
+                // bytes, or an empty vector when no resident image covers it.
+                virtual std::vector<uint8_t> read_framebuffer(uint32_t,uint32_t) { return {}; }
                 virtual void shutdown() = 0;
                 virtual uint32_t get_display_framerate() const = 0;
                 virtual float get_resolution_scale() const = 0;
@@ -117,6 +125,10 @@ namespace ultramodern {
         std::unique_ptr<RendererContext> create_render_context(uint8_t* rdram, WindowHandle window_handle, bool developer_mode);
 
         std::string get_graphics_api_name(GraphicsApi api);
+
+        // Synchronous guest-CPU request, ordered after preceding graphics tasks.
+        // Do not call from the graphics thread; use its context method instead.
+        std::vector<uint8_t> read_framebuffer(uint32_t address,uint32_t size);
     }
 }
 

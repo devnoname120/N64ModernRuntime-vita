@@ -8,7 +8,12 @@
 namespace recomp {
 #if defined(RECOMP_RDRAM_SIZE)
     constexpr size_t mem_size = RECOMP_RDRAM_SIZE;
-    constexpr size_t allocation_size = mem_size;
+    // On a 64-bit validation host, keep the rest of the KSEG physical range
+    // reserved and inaccessible. mmap allocations are not heap allocations
+    // tracked by ASan; without this guard, an out-of-RDRAM hardware-register
+    // access can accidentally land in a neighboring mapped region.
+    constexpr size_t allocation_size = sizeof(void*)>4 && mem_size<0x20000000ULL
+        ? 0x20000000ULL : mem_size;
 #elif defined(__vita__)
     // Original 8 MB, patch space, and a bounded native-extension heap.
     constexpr size_t mem_size = 32U * 1024U * 1024U;

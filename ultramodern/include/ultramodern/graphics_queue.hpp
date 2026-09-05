@@ -4,6 +4,19 @@
 #include <utility>
 
 namespace ultramodern {
+    // Share a FIFO producer across guest host threads. A readback submitted by
+    // one thread must not pass a graphics task submitted by another.
+    template<class Queue> class OrderedGraphicsProducer {
+        Queue &queue;
+        moodycamel::ProducerToken producer;
+        std::mutex mutex;
+    public:
+        explicit OrderedGraphicsProducer(Queue &queue) : queue(queue),producer(queue) {}
+        template<class Action> bool enqueue(Action &&action) {
+            std::lock_guard lock(mutex);
+            return queue.enqueue(producer,std::forward<Action>(action));
+        }
+    };
     // VI interrupts keep running at the guest rate even if rasterization is
     // slower. Retain only the latest scanout registers behind one queued action.
     template<class Registers> class LatestPresentation {

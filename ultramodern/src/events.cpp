@@ -8,6 +8,8 @@
 #include <mutex>
 #include <queue>
 #include <cstring>
+#include <exception>
+#include <stdexcept>
 
 #include "blockingconcurrentqueue.h"
 
@@ -40,7 +42,16 @@ struct DummyWorkloadAction {
     int32_t fb_address;
 };
 
-using Action = std::variant<SpTaskAction, ScreenUpdateAction, UpdateConfigAction, DummyWorkloadAction>;
+struct FramebufferReadback {
+    uint32_t address, size;
+    std::vector<uint8_t> bytes;
+    std::exception_ptr error;
+    moodycamel::LightweightSemaphore ready;
+    FramebufferReadback(uint32_t address,uint32_t size) : address(address),size(size) {}
+};
+struct ReadbackAction { std::shared_ptr<FramebufferReadback> request; };
+
+using Action = std::variant<SpTaskAction, ScreenUpdateAction, UpdateConfigAction, DummyWorkloadAction, ReadbackAction>;
 
 struct ViState {
     const OSViMode* mode = nullptr;
@@ -144,12 +155,30 @@ static struct {
 #else
     moodycamel::BlockingConcurrentQueue<Action> action_queue{};
 #endif
+    // ConcurrentQueue only orders a single producer's work. Guest graphics
+    // submissions and CPU readbacks may originate on different host threads;
+    // sharing this token under a lock prevents a readback overtaking a task.
+    ultramodern::OrderedGraphicsProducer<decltype(action_queue)> graphics_producer{action_queue};
+    std::atomic<bool> renderer_running{false};
     moodycamel::BlockingConcurrentQueue<OSTask*> sp_task_queue{};
     moodycamel::ConcurrentQueue<OSThread*> deleted_threads{};
 } events_context{};
 
 ultramodern::renderer::ViRegs* ultramodern::renderer::get_vi_regs() {
     return &events_context.vi.update_screen_regs;
+}
+
+std::vector<uint8_t> ultramodern::renderer::read_framebuffer(uint32_t address,uint32_t size) {
+    if(!size || !events_context.renderer_running.load()) return {};
+    if(std::this_thread::get_id()==events_context.sp.gfx_thread.get_id())
+        throw std::logic_error("Synchronous framebuffer request on the graphics thread");
+    auto request=std::make_shared<FramebufferReadback>(address,size);
+    if(!events_context.graphics_producer.enqueue(ReadbackAction{request})) throw std::bad_alloc();
+    while(!request->ready.wait(10000)) {
+        if(!events_context.renderer_running.load()) return {};
+    }
+    if(request->error) std::rethrow_exception(request->error);
+    return std::move(request->bytes);
 }
 
 #ifdef __vita__
@@ -373,6 +402,7 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
     ultramodern::rsp::init();
 
     // Notify the caller thread that this thread is ready.
+    events_context.renderer_running.store(true);
     thread_ready->signal();
 
 #if defined(__vita__) || defined(RECOMP_FAIR_GFX_QUEUE)
@@ -388,11 +418,11 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
 #endif
             // Determine the action type and act on it
             if (const auto* task_action = std::get_if<SpTaskAction>(&action)) {
-                // Tell the game that the RSP completed instantly. This will allow it to queue other task types, but it won't
-                // start another graphics task until the RDP is also complete. Games usually preserve the RSP inputs until the RDP
-                // is finished as well, so sending this early shouldn't be an issue in most cases.
-                // If this causes issues then the logic can be replaced with responding to yield requests.
-                sp_complete();
+                // Preserve legacy early completion for backends that request
+                // it. A CPU decoder must finish reading guest input memory
+                // before the game can reuse it in response to SP completion.
+                const bool defer_rsp=renderer_context->defer_rsp_completion();
+                if(!defer_rsp) sp_complete();
                 ultramodern::measure_input_latency();
 
                 PTR(u64) displaylist = task_action->task.t.data_ptr;
@@ -402,6 +432,7 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
                 renderer_context->send_dl(&task_action->task);
                 [[maybe_unused]] auto renderer_end = std::chrono::high_resolution_clock::now();
 
+                if(defer_rsp) sp_complete();
                 dp_complete();
                 // TODO hook the parsed event up to the actual parsing point when a callback is added to RT64.
                 ultramodern::extensions::on_displaylist_parsed(displaylist);
@@ -429,9 +460,16 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
             else if (const auto* dummy_workload_action = std::get_if<DummyWorkloadAction>(&action)) {
                 renderer_context->send_dummy_workload(dummy_workload_action->fb_address);
             }
+            else if (const auto* readback_action = std::get_if<ReadbackAction>(&action)) {
+                auto &request=*readback_action->request;
+                try { request.bytes=renderer_context->read_framebuffer(request.address,request.size); }
+                catch(...) { request.error=std::current_exception(); }
+                request.ready.signal();
+            }
         }
     }
 
+    events_context.renderer_running.store(false);
     graphics_shutdown_ready.wait();
     renderer_context->shutdown();
 }
@@ -596,7 +634,8 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
 
     // Send gfx tasks to the graphics action queue
     if (task->t.type == M_GFXTASK) {
-        events_context.action_queue.enqueue(SpTaskAction{ *task });
+        if(!events_context.graphics_producer.enqueue(SpTaskAction{ *task }))
+            throw std::bad_alloc();
     }
     // Set all other tasks as the RSP task
     else {
