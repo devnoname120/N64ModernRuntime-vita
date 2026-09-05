@@ -6,10 +6,19 @@
 #include "recomp.h"
 
 namespace recomp {
-    // 512GB (kseg0 size)
+#if defined(RECOMP_RDRAM_SIZE)
+    constexpr size_t mem_size = RECOMP_RDRAM_SIZE;
+    constexpr size_t allocation_size = mem_size;
+#elif defined(__vita__)
+    // Original 8 MB, patch space, and a bounded native-extension heap.
+    constexpr size_t mem_size = 32U * 1024U * 1024U;
+    constexpr size_t allocation_size = mem_size;
+#else
+    // 512 MB (kseg0 size)
     constexpr size_t mem_size = 512ULL * 1024ULL * 1024ULL;
     // 4GB (the full address space)
     constexpr size_t allocation_size = 4096ULL * 1024ULL * 1024ULL;
+#endif
     // We need a place in rdram to hold the PI handles, so pick an address in extended rdram
     constexpr int32_t cart_handle = 0x80800000;
     constexpr int32_t drive_handle = (int32_t)(cart_handle + sizeof(OSPiHandle));

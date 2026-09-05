@@ -22,13 +22,15 @@
 #include "ultramodern/ultramodern.hpp"
 #include "ultramodern/error_handling.hpp"
 #include "librecomp/addresses.hpp"
+#if RECOMP_ENABLE_MODS
 #include "librecomp/mods.hpp"
 #include "recompiler/live_recompiler.h"
+#endif
 
 #ifdef _WIN32
 #    define WIN32_LEAN_AND_MEAN
 #    include <Windows.h>
-#else
+#elif !defined(__vita__)
 #    include <sys/mman.h>
 #endif
 
@@ -54,7 +56,9 @@ std::filesystem::path config_path;
 // Maps game_id to the game's entry.
 std::unordered_map<std::u8string, recomp::GameEntry> game_roms {};
 // The global mod context.
+#if RECOMP_ENABLE_MODS
 std::unique_ptr<recomp::mods::ModContext> mod_context = std::make_unique<recomp::mods::ModContext>();
+#endif
 // The project's version.
 recomp::Version project_version;
 // The current game's save type.
@@ -82,13 +86,16 @@ bool recomp::register_game(const recomp::GameEntry& entry) {
         std::lock_guard<std::mutex> lock(game_roms_mutex);
         game_roms.insert({ entry.game_id, entry });
     }
+#if RECOMP_ENABLE_MODS
     if (!entry.mod_game_id.empty()) {
         std::lock_guard<std::mutex> lock(mod_context_mutex);
         mod_context->register_game(entry.mod_game_id);
     }
+#endif
     return true;
 }
 
+#if RECOMP_ENABLE_MODS
 void recomp::mods::initialize_mods() {
     N64Recomp::live_recompiler_init();
     std::filesystem::create_directories(config_path / mods_directory);
@@ -160,6 +167,8 @@ recomp::mods::DependencyStatus recomp::mods::is_dependency_met(size_t mod_index,
     std::lock_guard mod_lock{ mod_context_mutex };
     return mod_context->is_dependency_met(mod_index, dependency_id);
 }
+
+#endif
 
 bool check_hash(const std::vector<uint8_t>& rom_data, uint64_t expected_hash) {
     uint64_t calculated_hash = XXH3_64bits(rom_data.data(), rom_data.size());
@@ -541,7 +550,9 @@ void recomp::start_game(const std::u8string& game_id, const std::string& game_mo
     current_game = game_id;
     game_status.store(GameStatus::Running);
     game_status.notify_all();
+#if RECOMP_ENABLE_MODS
     mods::set_latest_game_mode_id(game_mode_id);
+#endif
 }
 
 bool ultramodern::is_game_started() {
@@ -560,6 +571,7 @@ void ultramodern::quit() {
     current_game.reset();
 }
 
+#if RECOMP_ENABLE_MODS
 void recomp::mods::enable_mod(const std::string& mod_id, bool enabled) {
     std::lock_guard lock { mod_context_mutex };
     return mod_context->enable_mod(mod_id, enabled, true);
@@ -698,6 +710,8 @@ void recomp::mods::set_mod_index(const std::string &mod_game_id, const std::stri
     return mod_context->set_mod_index(mod_game_id, mod_id, index);
 }
 
+#endif
+
 bool wait_for_game_started(uint8_t* rdram, recomp_context* context) {
     game_status.wait(GameStatus::None);
 
@@ -718,6 +732,7 @@ bool wait_for_game_started(uint8_t* rdram, recomp_context* context) {
                 }
 
                 uint32_t mod_ram_used = 0;
+#if RECOMP_ENABLE_MODS
                 if (!game_entry.mod_game_id.empty()) {
                     std::vector<recomp::mods::ModLoadErrorDetails> mod_load_errors;
                     {
@@ -748,6 +763,7 @@ bool wait_for_game_started(uint8_t* rdram, recomp_context* context) {
                     }
                 }
 
+#endif
                 recomp::init_heap(rdram, recomp::mod_rdram_start + mod_ram_used);
 
                 save_type = game_entry.save_type;
@@ -799,6 +815,7 @@ void print_cli_game_options() {
     }
 }
 
+#if RECOMP_ENABLE_MODS
 void print_cli_game_mode_options(const std::vector<recomp::mods::ModDetails> &mods) {
     for (const auto &mod : mods) {
         if (mod.custom_gamemode) {
@@ -894,6 +911,23 @@ void parse_cli(int argc, char **argv) {
     }
 }
 
+#else
+void parse_cli(int argc, char **argv) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], "--game") == 0) {
+            const std::string id = argv[++i];
+            for (const auto &item : game_roms) {
+                if (item.second.mod_game_id == id && recomp::is_rom_valid(item.second.game_id)) {
+                    recomp::start_game(item.second.game_id, "");
+                    return;
+                }
+            }
+            ultramodern::error_handling::message_box("Requested game ROM is unavailable");
+        }
+    }
+}
+#endif
+
 void recomp::start(const recomp::Configuration& cfg) {
     project_version = cfg.project_version;
 
@@ -928,8 +962,10 @@ void recomp::start(const recomp::Configuration& cfg) {
 
     ultramodern::set_message_queue_control(cfg.message_queue_control);
 
+#if RECOMP_ENABLE_MODS
     recomp::mods::initialize_mods();
     recomp::mods::scan_mods();
+#endif
 
     // Allocate rdram without comitting it. Use a platform-specific virtual allocation function
     // that initializes to zero. Protect the region above the memory size to catch accesses to invalid addresses.
@@ -946,6 +982,9 @@ void recomp::start(const recomp::Configuration& cfg) {
             VirtualFree(rdram, 0, MEM_RELEASE);
         }
     }
+#elif defined(__vita__)
+    rdram = static_cast<uint8_t*>(std::calloc(1, mem_size));
+    alloc_failed = rdram == nullptr;
 #else
     rdram = (uint8_t*)mmap(NULL, allocation_size, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
     alloc_failed = rdram == reinterpret_cast<uint8_t*>(MAP_FAILED);
@@ -964,8 +1003,10 @@ void recomp::start(const recomp::Configuration& cfg) {
     }
 
     recomp::register_heap_exports();
+#if RECOMP_ENABLE_MODS
     recomp::mods::register_config_exports();
     recomp::mods::register_hook_exports();
+#endif
 
     std::thread game_thread{[](ultramodern::renderer::WindowHandle window_handle, uint8_t* rdram) {
         debug_printf("[Recomp] Starting\n");
@@ -1003,7 +1044,12 @@ void recomp::start(const recomp::Configuration& cfg) {
     free_failed = (VirtualFree(rdram, 0, MEM_RELEASE) == 0);
 #else
     // munmap returns -1 on failure.
+#ifdef __vita__
+    std::free(rdram);
+    free_failed = false;
+#else
     free_failed = (munmap(rdram, allocation_size) == -1);
+#endif
 #endif
 
     if (free_failed) {

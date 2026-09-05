@@ -24,6 +24,10 @@ extern "C" {
 }
 #elif defined(__MACH__)
 #include <mach/mach.h>
+#elif defined(__vita__)
+#include <psp2/kernel/threadmgr.h>
+#include <psp2/kernel/error.h>
+#include <stdexcept>
 #elif defined(__unix__)
 #include <semaphore.h>
 
@@ -163,6 +167,44 @@ public:
 		{
 			while (semaphore_signal(m_sema) != KERN_SUCCESS);
 		}
+	}
+};
+#elif defined(__vita__)
+// Vita port: wait directly on the kernel semaphore. The runtime owns guest
+// thread termination, so POSIX cancellation polling is unnecessary here.
+class Semaphore
+{
+private:
+	SceUID m_sema;
+	Semaphore(const Semaphore& other) MOODYCAMEL_DELETE_FUNCTION;
+	Semaphore& operator=(const Semaphore& other) MOODYCAMEL_DELETE_FUNCTION;
+public:
+	Semaphore(int initialCount = 0)
+	{
+		m_sema = sceKernelCreateSema("Recomp semaphore", 0, initialCount, 0x7fffffff, nullptr);
+		if (m_sema < 0) throw std::runtime_error("Cannot create Vita semaphore");
+	}
+	~Semaphore() { sceKernelDeleteSema(m_sema); }
+	bool wait() { return sceKernelWaitSema(m_sema, 1, nullptr) == 0; }
+	bool try_wait() { return sceKernelPollSema(m_sema, 1) == 0; }
+	bool timed_wait(std::uint64_t usecs)
+	{
+		if (usecs == 0) return try_wait();
+		while (usecs) {
+			const SceUInt interval = usecs > 0xffffffffU ? 0xffffffffU : static_cast<SceUInt>(usecs);
+			SceUInt timeout = interval;
+			const int result = sceKernelWaitSema(m_sema, 1, &timeout);
+			if (result == 0) return true;
+			if (result != SCE_KERNEL_ERROR_WAIT_TIMEOUT) return false;
+			usecs -= interval;
+		}
+		return false;
+	}
+	void signal() { signal(1); }
+	void signal(int count)
+	{
+		if (count > 0 && sceKernelSignalSema(m_sema, count) < 0)
+			throw std::runtime_error("Cannot signal Vita semaphore");
 	}
 };
 #elif defined(__unix__)

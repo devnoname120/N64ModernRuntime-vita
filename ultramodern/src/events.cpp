@@ -17,6 +17,7 @@
 
 #include "ultramodern/rsp.hpp"
 #include "ultramodern/renderer_context.hpp"
+#include "ultramodern/graphics_queue.hpp"
 
 static ultramodern::events::callbacks_t events_callbacks{};
 
@@ -137,7 +138,12 @@ static struct {
     // The same message queue may be used for multiple events, so share a mutex for all of them
     std::mutex message_mutex;
     uint8_t* rdram;
+#if defined(__vita__) || defined(RECOMP_FAIR_GFX_QUEUE)
+    ultramodern::LatestPresentation<ultramodern::renderer::ViRegs> presentation;
+    moodycamel::BlockingConcurrentQueue<Action, ultramodern::VitaGraphicsQueueTraits> action_queue{};
+#else
     moodycamel::BlockingConcurrentQueue<Action> action_queue{};
+#endif
     moodycamel::BlockingConcurrentQueue<OSTask*> sp_task_queue{};
     moodycamel::ConcurrentQueue<OSThread*> deleted_threads{};
 } events_context{};
@@ -145,6 +151,12 @@ static struct {
 ultramodern::renderer::ViRegs* ultramodern::renderer::get_vi_regs() {
     return &events_context.vi.update_screen_regs;
 }
+
+#ifdef __vita__
+extern "C" size_t ultramodern_debug_gfx_queue_size() {
+    return events_context.action_queue.size_approx();
+}
+#endif
 
 extern "C" void osSetEventMesg(RDRAM_ARG OSEvent event_id, PTR(OSMesgQueue) mq_, OSMesg msg) {
     std::lock_guard lock{ events_context.message_mutex };
@@ -229,7 +241,12 @@ void vi_thread_func() {
 
         // Queue a screen update for the graphics thread with the current VI register state.
         // Doing this before the VI update is equivalent to updating the screen after the previous frame's scanout finished.
+#if defined(__vita__) || defined(RECOMP_FAIR_GFX_QUEUE)
+        if(events_context.presentation.publish(events_context.vi.regs))
+            events_context.action_queue.enqueue(ScreenUpdateAction{});
+#else
         events_context.action_queue.enqueue(ScreenUpdateAction{ events_context.vi.regs });
+#endif
 
         // Update VI registers and swap VI modes.
         events_context.vi.update_vi();
@@ -358,10 +375,17 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
     // Notify the caller thread that this thread is ready.
     thread_ready->signal();
 
+#if defined(__vita__) || defined(RECOMP_FAIR_GFX_QUEUE)
+    moodycamel::ConsumerToken graphics_consumer(events_context.action_queue);
+#endif
     while (!exited) {
         // Try to pull an action from the queue
         Action action;
+#if defined(__vita__) || defined(RECOMP_FAIR_GFX_QUEUE)
+        if (events_context.action_queue.wait_dequeue_timed(graphics_consumer, action, 1ms)) {
+#else
         if (events_context.action_queue.wait_dequeue_timed(action, 1ms)) {
+#endif
             // Determine the action type and act on it
             if (const auto* task_action = std::get_if<SpTaskAction>(&action)) {
                 // Tell the game that the RSP completed instantly. This will allow it to queue other task types, but it won't
@@ -385,7 +409,12 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
                 // printf("Renderer ProcessDList time: %d us\n", static_cast<u32>(std::chrono::duration_cast<std::chrono::microseconds>(renderer_end - renderer_start).count()));
             }
             else if (const auto* screen_update_action = std::get_if<ScreenUpdateAction>(&action)) {
+#if defined(__vita__) || defined(RECOMP_FAIR_GFX_QUEUE)
+                (void)screen_update_action;
+                events_context.vi.update_screen_regs = events_context.presentation.consume();
+#else
                 events_context.vi.update_screen_regs = screen_update_action->regs;
+#endif
                 renderer_context->update_screen();
                 display_refresh_rate = renderer_context->get_display_framerate();
                 resolution_scale = renderer_context->get_resolution_scale();

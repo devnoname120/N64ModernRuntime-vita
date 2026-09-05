@@ -126,6 +126,9 @@
 #include <fenv.h>
 #include <stdint.h>
 #include <stdlib.h>
+#ifdef __vita__
+#include <malloc.h>
+#endif
 #include <string.h>
 
 FORCE_INLINE double sse2neon_recast_u64_f64(uint64_t u64)
@@ -1979,6 +1982,8 @@ FORCE_INLINE void *_mm_malloc(size_t size, size_t align)
 {
 #if defined(_WIN32)
     return _aligned_malloc(size, align);
+#elif defined(__vita__)
+    return memalign(align < sizeof(void *) ? sizeof(void *) : align, size);
 #else
     void *ptr;
     if (align == 1)

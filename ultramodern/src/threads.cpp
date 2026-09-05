@@ -8,6 +8,7 @@
 #include "blockingconcurrentqueue.h"
 
 #include "ultramodern/threads.hpp"
+#include "threadqueue_debug.hpp"
 
 // Native APIs only used to set thread names for easier debugging
 #ifdef _WIN32
@@ -137,6 +138,11 @@ void ultramodern::set_native_thread_priority(ThreadPriority pri) {
     //         break;
     // }
 }
+#elif defined(__vita__)
+// Vita thread names are assigned at creation by the pthread implementation.
+// Guest scheduling is already enforced by the runtime's semaphore handoffs.
+void ultramodern::set_native_thread_name(const std::string&) {}
+void ultramodern::set_native_thread_priority(ThreadPriority) {}
 #elif defined(__APPLE__)
 void ultramodern::set_native_thread_name(const std::string& name) {
     if (name.length() > 15) {
@@ -151,7 +157,11 @@ void ultramodern::set_native_thread_priority(ThreadPriority pri) {}
 #endif
 
 void wait_for_resumed(RDRAM_ARG UltraThreadContext* thread_context) {
-    thread_context->running.wait();
+    debug_queue_event('W',0,thread_self,0);
+    if (!thread_context->running.wait()) {
+        throw std::runtime_error("Guest thread resume semaphore wait failed");
+    }
+    debug_queue_event('R',0,thread_self,0);
     // If this thread's context was replaced by another thread or deleted, destroy it again from its own context.
     // This will trigger thread cleanup instead.
     if (TO_PTR(OSThread, ultramodern::this_thread())->context != thread_context) {
@@ -160,16 +170,23 @@ void wait_for_resumed(RDRAM_ARG UltraThreadContext* thread_context) {
 }
 
 void resume_thread(OSThread* t) {
+    debug_queue_event('S',0,t->id,0);
     debug_printf("[Thread] Resuming execution of thread %d\n", t->id);
     t->context->running.signal();
 }
 
 void run_next_thread(RDRAM_ARG1) {
     if (ultramodern::thread_queue_empty(PASS_RDRAM ultramodern::running_queue)) {
-        throw std::runtime_error("No threads left to run!\n");
+        OSThread* current = thread_self ? TO_PTR(OSThread, thread_self) : nullptr;
+        char details[160];
+        std::snprintf(details, sizeof(details), "No threads left to run: current=%08x id=%d priority=%d queue=%08x",
+            uint32_t(thread_self), current ? current->id : -1, current ? current->priority : -1,
+            current ? uint32_t(current->queue) : 0);
+        throw std::runtime_error(details);
     }
 
     OSThread* to_run = TO_PTR(OSThread, ultramodern::thread_queue_pop(PASS_RDRAM ultramodern::running_queue));
+    debug_queue_event('S',0,to_run->id,0);
     debug_printf("[Scheduling] Resuming execution of thread %d\n", to_run->id);
     to_run->context->running.signal();
 }

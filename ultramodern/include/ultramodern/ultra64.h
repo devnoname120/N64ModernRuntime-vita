@@ -39,7 +39,11 @@ typedef uint8_t u8;
 #  define RDRAM_ARG1 uint8_t *rdram
 #  define PASS_RDRAM rdram, 
 #  define PASS_RDRAM1 rdram
-#  define TO_PTR(type, var) ((type*)(&rdram[(uint64_t)var - 0xFFFFFFFF80000000]))
+#  if defined(__vita__) || defined(RECOMP_MIRROR_KSEG1)
+#    define TO_PTR(type, var) ((type*)(&rdram[(uint32_t)(var) & 0x1FFFFFFFU]))
+#  else
+#    define TO_PTR(type, var) ((type*)(&rdram[(uint64_t)var - 0xFFFFFFFF80000000]))
+#  endif
 #  define GET_MEMBER(type, addr, member) (addr + (intptr_t)&(((type*)nullptr)->member))
 #  ifdef __cplusplus
 #    define NULLPTR (PTR(void))0
@@ -103,7 +107,12 @@ typedef struct OSThread_t {
     uint16_t state;
     OSId id;
     int32_t pad3;
-    UltraThreadContext* context; // An actual pointer regardless of platform
+    // Preserve the runtime's guest-memory layout on both 32- and 64-bit hosts.
+    // This private slot occupies the first eight bytes of the N64 saved context.
+    union {
+        UltraThreadContext* context;
+        uint64_t context_storage;
+    };
     int32_t sp;
 } OSThread;
 
