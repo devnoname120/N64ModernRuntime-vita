@@ -539,6 +539,13 @@ extern "C" void osViSetMode(RDRAM_ARG PTR(OSViMode) mode_) {
     next_state->control = next_state->mode->comRegs.ctrl;
 }
 
+extern "C" u8 osViGetCurrentMode() {
+    std::lock_guard lock{ events_context.message_mutex };
+    const OSViMode* mode = events_context.vi.get_cur_state()->mode;
+    // OSViMode already accounts for the guest's word-swapped type byte.
+    return mode ? mode->type : 0;
+}
+
 #define OS_VI_GAMMA_ON          0x0001
 #define OS_VI_GAMMA_OFF         0x0002
 #define OS_VI_GAMMA_DITHER_ON   0x0004
