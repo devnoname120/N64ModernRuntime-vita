@@ -94,6 +94,7 @@ namespace ultramodern {
                 // Invoked on the graphics thread. Return N64-ordered color
                 // bytes, or an empty vector when no resident image covers it.
                 virtual std::vector<uint8_t> read_framebuffer(uint32_t,uint32_t) { return {}; }
+                virtual std::vector<uint8_t> read_depthbuffer(uint32_t,uint32_t) { return {}; }
                 virtual void shutdown() = 0;
                 virtual uint32_t get_display_framerate() const = 0;
                 virtual float get_resolution_scale() const = 0;
@@ -129,6 +130,7 @@ namespace ultramodern {
         // Synchronous guest-CPU request, ordered after preceding graphics tasks.
         // Do not call from the graphics thread; use its context method instead.
         std::vector<uint8_t> read_framebuffer(uint32_t address,uint32_t size);
+        std::vector<uint8_t> read_depthbuffer(uint32_t address,uint32_t size);
     }
 }
 

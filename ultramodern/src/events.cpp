@@ -44,10 +44,11 @@ struct DummyWorkloadAction {
 
 struct FramebufferReadback {
     uint32_t address, size;
+    bool depth;
     std::vector<uint8_t> bytes;
     std::exception_ptr error;
     moodycamel::LightweightSemaphore ready;
-    FramebufferReadback(uint32_t address,uint32_t size) : address(address),size(size) {}
+    FramebufferReadback(uint32_t address,uint32_t size,bool depth) : address(address),size(size),depth(depth) {}
 };
 struct ReadbackAction { std::shared_ptr<FramebufferReadback> request; };
 
@@ -168,17 +169,25 @@ ultramodern::renderer::ViRegs* ultramodern::renderer::get_vi_regs() {
     return &events_context.vi.update_screen_regs;
 }
 
-std::vector<uint8_t> ultramodern::renderer::read_framebuffer(uint32_t address,uint32_t size) {
+static std::vector<uint8_t> read_rendered_image(uint32_t address,uint32_t size,bool depth) {
     if(!size || !events_context.renderer_running.load()) return {};
     if(std::this_thread::get_id()==events_context.sp.gfx_thread.get_id())
         throw std::logic_error("Synchronous framebuffer request on the graphics thread");
-    auto request=std::make_shared<FramebufferReadback>(address,size);
+    auto request=std::make_shared<FramebufferReadback>(address,size,depth);
     if(!events_context.graphics_producer.enqueue(ReadbackAction{request})) throw std::bad_alloc();
     while(!request->ready.wait(10000)) {
         if(!events_context.renderer_running.load()) return {};
     }
     if(request->error) std::rethrow_exception(request->error);
     return std::move(request->bytes);
+}
+
+std::vector<uint8_t> ultramodern::renderer::read_framebuffer(uint32_t address,uint32_t size) {
+    return read_rendered_image(address,size,false);
+}
+
+std::vector<uint8_t> ultramodern::renderer::read_depthbuffer(uint32_t address,uint32_t size) {
+    return read_rendered_image(address,size,true);
 }
 
 #ifdef __vita__
@@ -462,7 +471,10 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
             }
             else if (const auto* readback_action = std::get_if<ReadbackAction>(&action)) {
                 auto &request=*readback_action->request;
-                try { request.bytes=renderer_context->read_framebuffer(request.address,request.size); }
+                try {
+                    request.bytes=request.depth?renderer_context->read_depthbuffer(request.address,request.size)
+                        :renderer_context->read_framebuffer(request.address,request.size);
+                }
                 catch(...) { request.error=std::current_exception(); }
                 request.ready.signal();
             }
