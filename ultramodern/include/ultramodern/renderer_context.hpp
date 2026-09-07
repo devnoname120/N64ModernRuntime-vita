@@ -88,6 +88,9 @@ namespace ultramodern {
                 // and command memory during send_dl. They must defer the SP
                 // completion interrupt until those reads have finished.
                 virtual bool defer_rsp_completion() const { return false; }
+                // Opt in only when graphics decoding can coexist with the RSP
+                // worker without sharing its mutable execution state.
+                virtual bool supports_rsp_yield() const { return false; }
                 virtual void send_dl(const OSTask* task) = 0;
                 virtual void send_dummy_workload(uint32_t fb_address) = 0;
                 virtual void update_screen() = 0;

@@ -37,12 +37,11 @@ extern "C" void osSpTaskStartGo_recomp(uint8_t* rdram, recomp_context* ctx) {
 }
 
 extern "C" void osSpTaskYield_recomp(uint8_t* rdram, recomp_context* ctx) {
-    // Ignore yield requests (acts as if the task completed before it received the yield request)
+    ultramodern::yield_rsp_task();
 }
 
 extern "C" void osSpTaskYielded_recomp(uint8_t* rdram, recomp_context* ctx) {
-    // Task yield requests are ignored, so always return 0 as tasks will never be yielded
-    ctx->r2 = 0;
+    ctx->r2 = ultramodern::rsp_task_yielded(ctx->r4);
 }
 
 extern "C" void __osSpSetPc_recomp(uint8_t* rdram, recomp_context* ctx) {

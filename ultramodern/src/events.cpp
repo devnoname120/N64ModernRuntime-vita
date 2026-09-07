@@ -20,6 +20,7 @@
 #include "ultramodern/rsp.hpp"
 #include "ultramodern/renderer_context.hpp"
 #include "ultramodern/graphics_queue.hpp"
+#include "ultramodern/rsp_yield.hpp"
 
 static ultramodern::events::callbacks_t events_callbacks{};
 
@@ -29,6 +30,8 @@ void ultramodern::events::set_callbacks(const ultramodern::events::callbacks_t& 
 
 struct SpTaskAction {
     OSTask task;
+    uint32_t address=0;
+    bool yieldable=false;
 };
 
 struct ScreenUpdateAction {
@@ -161,6 +164,9 @@ static struct {
     // sharing this token under a lock prevents a readback overtaking a task.
     ultramodern::OrderedGraphicsProducer<decltype(action_queue)> graphics_producer{action_queue};
     std::atomic<bool> renderer_running{false};
+    std::mutex graphics_task_mutex;
+    ultramodern::YieldableGraphicsTask graphics_task;
+    bool graphics_yield_enabled=false;
     moodycamel::BlockingConcurrentQueue<OSTask*> sp_task_queue{};
     moodycamel::ConcurrentQueue<OSThread*> deleted_threads{};
 } events_context{};
@@ -327,6 +333,17 @@ void dp_complete() {
     ultramodern::enqueue_external_message_src(events_context.dp.mq, events_context.dp.msg, false, ultramodern::EventMessageSource::Dp);
 }
 
+void ultramodern::yield_rsp_task() {
+    std::lock_guard lock{events_context.graphics_task_mutex};
+    if(events_context.graphics_yield_enabled && events_context.graphics_task.request_yield())sp_complete();
+}
+
+bool ultramodern::rsp_task_yielded(PTR(OSTask) task) {
+    std::lock_guard lock{events_context.graphics_task_mutex};
+    return events_context.graphics_yield_enabled
+        && events_context.graphics_task.was_yielded(uint32_t(task)&0x1fffffff);
+}
+
 void task_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_ready) {
     ultramodern::set_native_thread_name("SP Task Thread");
     ultramodern::set_native_thread_priority(ultramodern::ThreadPriority::Normal);
@@ -411,6 +428,11 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
     ultramodern::rsp::init();
 
     // Notify the caller thread that this thread is ready.
+    {
+        std::lock_guard lock{events_context.graphics_task_mutex};
+        events_context.graphics_task={};
+        events_context.graphics_yield_enabled=renderer_context->defer_rsp_completion() && renderer_context->supports_rsp_yield();
+    }
     events_context.renderer_running.store(true);
     thread_ready->signal();
 
@@ -441,8 +463,17 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
                 renderer_context->send_dl(&task_action->task);
                 [[maybe_unused]] auto renderer_end = std::chrono::high_resolution_clock::now();
 
-                if(defer_rsp) sp_complete();
-                dp_complete();
+                if(task_action->yieldable) {
+                    std::lock_guard lock{events_context.graphics_task_mutex};
+                    // DK64's deferred VI path can release a framebuffer on DP
+                    // alone. A logical yield must retain both final events.
+                    if(events_context.graphics_task.complete(task_action->address)) {
+                        sp_complete();dp_complete();
+                    }
+                } else {
+                    if(defer_rsp)sp_complete();
+                    dp_complete();
+                }
                 // TODO hook the parsed event up to the actual parsing point when a callback is added to RT64.
                 ultramodern::extensions::on_displaylist_parsed(displaylist);
                 ultramodern::extensions::on_displaylist_completed(displaylist);
@@ -653,7 +684,19 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
 
     // Send gfx tasks to the graphics action queue
     if (task->t.type == M_GFXTASK) {
-        if(!events_context.graphics_producer.enqueue(SpTaskAction{ *task }))
+        std::lock_guard lock{events_context.graphics_task_mutex};
+        const uint32_t address=uint32_t(task_)&0x1fffffff;
+        const bool yieldable=events_context.graphics_yield_enabled;
+        if(yieldable) {
+            const auto result=events_context.graphics_task.start(address);
+            if(result!=YieldableGraphicsTask::Start::Execute) {
+                if(result==YieldableGraphicsTask::Start::Complete) {
+                    sp_complete();dp_complete();
+                }
+                return;
+            }
+        }
+        if(!events_context.graphics_producer.enqueue(SpTaskAction{*task,address,yieldable}))
             throw std::bad_alloc();
     }
     // Set all other tasks as the RSP task

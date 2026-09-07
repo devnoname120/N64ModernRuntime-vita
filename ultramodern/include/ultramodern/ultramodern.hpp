@@ -100,6 +100,8 @@ void set_entrypoint_thread();
 bool is_entrypoint_thread();
 bool is_game_thread();
 void submit_rsp_task(RDRAM_ARG PTR(OSTask) task);
+void yield_rsp_task();
+bool rsp_task_yielded(PTR(OSTask) task);
 void send_si_message();
 uint32_t get_speed_multiplier();
 
